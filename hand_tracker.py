@@ -23,10 +23,13 @@ class HandTrackerError(RuntimeError):
 @dataclass(slots=True)
 class TrackingFrame:
     image_rgb: np.ndarray | None
-    fingertip: tuple[float, float] | None
+    cursor: tuple[float, float] | None
+    fingertips: tuple[tuple[float, float], ...]
 
 
 class HandTracker:
+    FINGERTIP_LANDMARKS = (4, 8, 12, 16, 20)
+
     def __init__(self, camera_index: int = 0, smoothing: float = CURSOR_SMOOTHING) -> None:
         if mp is None:
             detail = f": {MEDIAPIPE_IMPORT_ERROR}" if MEDIAPIPE_IMPORT_ERROR else ""
@@ -39,7 +42,7 @@ class HandTracker:
             )
 
         self.smoothing = smoothing
-        self._smoothed_point: tuple[float, float] | None = None
+        self._smoothed_fingertips: tuple[tuple[float, float], ...] | None = None
         self._capture = cv2.VideoCapture(camera_index)
         if not self._capture.isOpened():
             self._capture.release()
@@ -48,6 +51,8 @@ class HandTracker:
             )
         self._capture.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
         self._capture.set(cv2.CAP_PROP_FRAME_HEIGHT, 360)
+        self._capture.set(cv2.CAP_PROP_FPS, 60)
+        self._capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
         try:
             self._hands = mp.solutions.hands.Hands(
@@ -64,7 +69,7 @@ class HandTracker:
     def read(self) -> TrackingFrame:
         success, frame_bgr = self._capture.read()
         if not success or frame_bgr is None:
-            return TrackingFrame(None, None)
+            return TrackingFrame(None, None, ())
 
         frame_bgr = cv2.flip(frame_bgr, 1)
         frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
@@ -73,24 +78,38 @@ class HandTracker:
         except Exception as error:
             raise HandTrackerError(f"hand tracking failed: {error}") from error
 
-        point = None
+        cursor = None
+        fingertips: tuple[tuple[float, float], ...] = ()
         if result.multi_hand_landmarks:
-            fingertip = result.multi_hand_landmarks[0].landmark[8]
-            raw_point = (
-                min(1.0, max(0.0, fingertip.x)),
-                min(1.0, max(0.0, fingertip.y)),
-            )
-            if self._smoothed_point is None:
-                self._smoothed_point = raw_point
-            else:
-                previous_x, previous_y = self._smoothed_point
-                self._smoothed_point = (
-                    previous_x + self.smoothing * (raw_point[0] - previous_x),
-                    previous_y + self.smoothing * (raw_point[1] - previous_y),
+            landmarks = result.multi_hand_landmarks[0].landmark
+            raw_fingertips = tuple(
+                (
+                    min(1.0, max(0.0, landmarks[index].x)),
+                    min(1.0, max(0.0, landmarks[index].y)),
                 )
-            point = self._smoothed_point
+                for index in self.FINGERTIP_LANDMARKS
+            )
+            if self._smoothed_fingertips is None:
+                self._smoothed_fingertips = raw_fingertips
+            else:
+                self._smoothed_fingertips = tuple(
+                    (
+                        previous[0] + self.smoothing * (current[0] - previous[0]),
+                        previous[1] + self.smoothing * (current[1] - previous[1]),
+                    )
+                    for previous, current in zip(
+                        self._smoothed_fingertips,
+                        raw_fingertips,
+                        strict=True,
+                    )
+                )
+            fingertips = self._smoothed_fingertips
+            cursor = (
+                sum(point[0] for point in fingertips) / len(fingertips),
+                sum(point[1] for point in fingertips) / len(fingertips),
+            )
 
-        return TrackingFrame(frame_rgb, point)
+        return TrackingFrame(frame_rgb, cursor, fingertips)
 
     def close(self) -> None:
         self._capture.release()

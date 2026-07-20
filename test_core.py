@@ -65,6 +65,10 @@ class WheelGeometryTests(unittest.TestCase):
 
 
 class HoverSelectionTests(unittest.TestCase):
+    def test_zero_delay_selects_immediately(self) -> None:
+        hover = HoverSelection(delay_ms=0)
+        self.assertEqual(hover.update(3, 1_000), (3, True))
+
     def test_selection_waits_for_delay(self) -> None:
         hover = HoverSelection(delay_ms=150)
         self.assertEqual(hover.update(3, 1_000), (None, False))

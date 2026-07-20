@@ -40,6 +40,9 @@ class HoverSelection:
         if section != self._candidate:
             self._candidate = section
             self._candidate_since = now_ms
+            if self.delay_ms <= 0:
+                self.active = section
+                return self.active, True
             return self.active, False
         if now_ms - self._candidate_since >= self.delay_ms:
             self.active = section

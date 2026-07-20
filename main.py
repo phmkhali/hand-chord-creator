@@ -86,8 +86,8 @@ def draw_camera_background(surface: pygame.Surface, frame: TrackingFrame | None)
     surface.blit(camera_surface, offset)
 
 
-def map_fingertip_to_screen(
-    fingertip: tuple[float, float],
+def map_camera_point_to_screen(
+    point: tuple[float, float],
     frame: TrackingFrame,
     surface_size: tuple[int, int],
 ) -> tuple[int, int]:
@@ -95,8 +95,8 @@ def map_fingertip_to_screen(
         return 0, 0
     image_height, image_width = frame.image_rgb.shape[:2]
     scaled_size, offset = camera_cover_layout((image_width, image_height), surface_size)
-    x = round(offset[0] + fingertip[0] * scaled_size[0])
-    y = round(offset[1] + fingertip[1] * scaled_size[1])
+    x = round(offset[0] + point[0] * scaled_size[0])
+    y = round(offset[1] + point[1] * scaled_size[1])
     return (
         min(surface_size[0] - 1, max(0, x)),
         min(surface_size[1] - 1, max(0, y)),
@@ -107,10 +107,18 @@ def draw_cursor(
     surface: pygame.Surface,
     position: tuple[int, int] | None,
     active: bool,
+    fingertips: tuple[tuple[int, int], ...] = (),
 ) -> None:
     if position is None:
         return
     color = (247, 247, 250) if active else (115, 123, 138)
+    if active and fingertips:
+        hand_overlay = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
+        for fingertip in fingertips:
+            pygame.draw.line(hand_overlay, (103, 215, 255, 180), fingertip, position, width=3)
+            pygame.draw.circle(hand_overlay, (245, 250, 255, 225), fingertip, 7)
+            pygame.draw.circle(hand_overlay, (50, 166, 220, 245), fingertip, 7, width=2)
+        surface.blit(hand_overlay, (0, 0))
     pygame.draw.circle(surface, (16, 19, 25), position, 14)
     pygame.draw.circle(surface, color, position, 10, width=3)
     if not active:
@@ -162,6 +170,7 @@ def run() -> int:
 
     tracking_frame: TrackingFrame | None = None
     last_hand_position: tuple[int, int] | None = None
+    hand_fingertips: tuple[tuple[int, int], ...] = ()
     hand_detected = False
     running = True
 
@@ -208,13 +217,19 @@ def run() -> int:
                 tracker = None
                 mode = "mouse"
 
-        hand_detected = bool(tracking_frame and tracking_frame.fingertip)
-        if hand_detected and tracking_frame is not None and tracking_frame.fingertip is not None:
-            last_hand_position = map_fingertip_to_screen(
-                tracking_frame.fingertip,
+        hand_detected = bool(tracking_frame and tracking_frame.cursor)
+        if hand_detected and tracking_frame is not None and tracking_frame.cursor is not None:
+            last_hand_position = map_camera_point_to_screen(
+                tracking_frame.cursor,
                 tracking_frame,
                 window.get_size(),
             )
+            hand_fingertips = tuple(
+                map_camera_point_to_screen(point, tracking_frame, window.get_size())
+                for point in tracking_frame.fingertips
+            )
+        else:
+            hand_fingertips = ()
 
         cursor_active = mode == "mouse" or hand_detected
         cursor_position = pygame.mouse.get_pos() if mode == "mouse" else last_hand_position
@@ -235,7 +250,8 @@ def run() -> int:
         current_chord = chords[active_section].name if active_section is not None else "none"
         draw_status(window, mode, camera_status, hand_detected, current_chord, audio_status)
         editor.draw(window, chords)
-        draw_cursor(window, cursor_position, cursor_active)
+        visible_fingertips = hand_fingertips if mode == "hand" else ()
+        draw_cursor(window, cursor_position, cursor_active, visible_fingertips)
         pygame.display.flip()
         clock.tick(TARGET_FPS)
 

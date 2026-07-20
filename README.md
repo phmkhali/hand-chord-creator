@@ -1,6 +1,6 @@
 # Hand Chord Wheel
 
-A desktop prototype that turns an index fingertip—or the mouse—into a cursor for a customizable chord wheel. The mirrored camera fills the window, with the wheel shown as a translucent overlay on the right. Hovering over a section sustains a synthesized chord, moving between sections crossfades the sound, and leaving the wheel fades it out.
+A desktop prototype that turns the center of your five tracked fingertips—or the mouse—into a cursor for a customizable chord wheel. The mirrored camera fills the window, with the wheel shown as a translucent overlay on the right. Entering a section sustains a synthesized chord, moving between sections crossfades the sound, and leaving the wheel fades it out.
 
 ## Requirements
 
@@ -40,8 +40,8 @@ On Linux, sounddevice uses PortAudio. If installation or device opening fails, i
 
 ## Controls
 
-- Point with your index fingertip to move the cursor.
-- Hover over a wheel section for 150 ms to select it.
+- Move your whole hand to control the cursor. All five fingertips are marked, and their guide lines converge on the active cursor.
+- Move the cursor into a wheel section to play it immediately; there is no hover delay.
 - Click the chord search field, type a symbol such as `C`, `F#m`, or `Bb dim`, and press Enter or choose a suggestion to add it.
 - Click the `×` on a chord chip to remove that chord from the wheel.
 - Press `M` to switch between hand and mouse control.
