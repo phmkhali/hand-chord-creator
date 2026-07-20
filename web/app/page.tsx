@@ -9,13 +9,21 @@ import {
   findChord,
   restoreChords,
   searchChords,
+  transposeChord,
 } from "./chords";
+import { isClosedFist } from "./gesture";
 
-const STORAGE_KEY = "chordspace-wheel-v1";
-const MAX_CHORDS = 12;
+const STORAGE_KEY = "chordspace-wheel-v2";
+const LEGACY_STORAGE_KEY = "chordspace-wheel-v1";
+const MAX_CHORDS = 16;
 const TIP_INDEXES = [4, 8, 12, 16, 20];
 
 type Point = { x: number; y: number };
+
+type WheelChord = Chord & {
+  transposedLabel: string | null;
+  transposedName: string | null;
+};
 
 const wheelGeometry = (width: number, height: number) => {
   const radius = Math.max(150, Math.min(width * 0.225, height * 0.36));
@@ -62,7 +70,7 @@ const roundedPolygon = (
 
 const drawWheel = (
   context: CanvasRenderingContext2D,
-  chords: Chord[],
+  chords: WheelChord[],
   activeIndex: number | null,
   width: number,
   height: number,
@@ -119,12 +127,18 @@ const drawWheel = (
     context.textAlign = "center";
     context.textBaseline = "middle";
     context.fillStyle = "rgba(255,255,255,.96)";
-    context.font = `600 ${Math.max(13, Math.min(18, radius / 15))}px Geist, sans-serif`;
-    context.fillText(chord.label, x, y - (chords.length <= 10 ? 7 : 0));
+    const labelOffset = chords.length <= 10 ? (chord.transposedLabel ? 13 : 7) : (chord.transposedLabel ? 7 : 0);
+    context.font = `600 ${Math.max(13, Math.min(18, radius / 15))}px system-ui, sans-serif`;
+    context.fillText(chord.label, x, y - labelOffset);
+    if (chord.transposedLabel) {
+      context.fillStyle = "rgba(255,255,255,.72)";
+      context.font = `500 ${Math.max(10, Math.min(13, radius / 20))}px monospace`;
+      context.fillText(`(${chord.transposedLabel})`, x, y + (chords.length <= 10 ? 4 : 9));
+    }
     if (chords.length <= 10) {
       context.fillStyle = "rgba(255,255,255,.52)";
-      context.font = "500 10px Geist Mono, monospace";
-      context.fillText(chord.notes.join(" · "), x, y + 10);
+      context.font = "500 10px monospace";
+      context.fillText(chord.notes.join(" · "), x, y + (chord.transposedLabel ? 19 : 10));
     }
   });
 
@@ -177,43 +191,76 @@ export default function Home() {
   const animationRef = useRef<number | null>(null);
   const lastVideoTimeRef = useRef(-1);
   const smoothedTipsRef = useRef<Point[]>([]);
-  const chordsRef = useRef<Chord[]>(defaultChords);
+  const chordsRef = useRef<WheelChord[]>(defaultChords.map((chord) => ({
+    ...chord,
+    transposedLabel: null,
+    transposedName: null,
+  })));
   const activeIndexRef = useRef<number | null>(null);
   const handDetectedRef = useRef(false);
+  const fistClosedRef = useRef(false);
   const audioRef = useRef(new ChordAudioEngine());
 
   const [chords, setChords] = useState(defaultChords);
+  const [transpose, setTranspose] = useState(0);
   const [query, setQuery] = useState("");
-  const [message, setMessage] = useState("Search major, minor, or diminished chords");
+  const [message, setMessage] = useState("Explore 250+ triads, sevenths, extensions, and suspensions");
   const [launchState, setLaunchState] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [errorMessage, setErrorMessage] = useState("");
   const [handDetected, setHandDetected] = useState(false);
-  const [activeChord, setActiveChord] = useState<Chord | null>(null);
+  const [fistClosed, setFistClosed] = useState(false);
+  const [activeChord, setActiveChord] = useState<WheelChord | null>(null);
   const [cameras, setCameras] = useState<MediaDeviceInfo[]>([]);
   const [cameraId, setCameraId] = useState("");
 
-  const suggestions = useMemo(() => searchChords(query, 5), [query]);
+  const suggestions = useMemo(() => searchChords(query), [query]);
+  const wheelChords = useMemo(
+    () => chords.map((chord) => {
+      const soundingChord = transposeChord(chord, transpose);
+      return {
+        ...soundingChord,
+        label: chord.label,
+        name: chord.name,
+        hue: chord.hue,
+        transposedLabel: transpose ? soundingChord.label : null,
+        transposedName: transpose ? soundingChord.name : null,
+      };
+    }),
+    [chords, transpose],
+  );
 
   useEffect(() => {
-    const stored = window.localStorage.getItem(STORAGE_KEY);
+    const stored = window.localStorage.getItem(STORAGE_KEY) || window.localStorage.getItem(LEGACY_STORAGE_KEY);
     if (!stored) return;
     try {
-      const restored = restoreChords(JSON.parse(stored));
-      if (restored.length) window.setTimeout(() => setChords(restored), 0);
+      const parsed = JSON.parse(stored) as string[] | { chordIds?: string[]; transpose?: number };
+      const chordIds = Array.isArray(parsed) ? parsed : parsed.chordIds || [];
+      const restored = restoreChords(chordIds);
+      if (restored.length) {
+        window.setTimeout(() => {
+          setChords(restored);
+          if (!Array.isArray(parsed) && Number.isFinite(parsed.transpose)) {
+            setTranspose(Math.max(-12, Math.min(12, parsed.transpose || 0)));
+          }
+        }, 0);
+      }
     } catch {
       window.localStorage.removeItem(STORAGE_KEY);
     }
   }, []);
 
   useEffect(() => {
-    chordsRef.current = chords;
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(chords.map((chord) => chord.id)));
-    if (activeIndexRef.current !== null && activeIndexRef.current >= chords.length) {
+    chordsRef.current = wheelChords;
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      chordIds: chords.map((chord) => chord.id),
+      transpose,
+    }));
+    if (activeIndexRef.current !== null) {
       activeIndexRef.current = null;
       setActiveChord(null);
       audioRef.current.stop();
     }
-  }, [chords]);
+  }, [chords, transpose, wheelChords]);
 
   const renderFrame = useCallback(function renderTrackingFrame(timestamp: number) {
     const video = videoRef.current;
@@ -239,28 +286,45 @@ export default function Home() {
       const result = landmarker.detectForVideo(video, timestamp);
       const landmarks = result.landmarks[0] as NormalizedLandmark[] | undefined;
       if (landmarks) {
-        const rawTips = TIP_INDEXES.map((index) => ({ x: landmarks[index].x, y: landmarks[index].y }));
-        if (!smoothedTipsRef.current.length) smoothedTipsRef.current = rawTips;
-        smoothedTipsRef.current = rawTips.map((tip, index) => ({
-          x: smoothedTipsRef.current[index].x + (tip.x - smoothedTipsRef.current[index].x) * 0.7,
-          y: smoothedTipsRef.current[index].y + (tip.y - smoothedTipsRef.current[index].y) * 0.7,
-        }));
+        const fist = isClosedFist(landmarks);
+        if (fist !== fistClosedRef.current) {
+          fistClosedRef.current = fist;
+          setFistClosed(fist);
+        }
+        if (fist) {
+          smoothedTipsRef.current = [];
+        } else {
+          const rawTips = TIP_INDEXES.map((index) => ({ x: landmarks[index].x, y: landmarks[index].y }));
+          if (!smoothedTipsRef.current.length) smoothedTipsRef.current = rawTips;
+          smoothedTipsRef.current = rawTips.map((tip, index) => ({
+            x: smoothedTipsRef.current[index].x + (tip.x - smoothedTipsRef.current[index].x) * 0.7,
+            y: smoothedTipsRef.current[index].y + (tip.y - smoothedTipsRef.current[index].y) * 0.7,
+          }));
+        }
+        if (!handDetectedRef.current) {
+          handDetectedRef.current = true;
+          setHandDetected(true);
+        }
       } else {
         smoothedTipsRef.current = [];
+        if (fistClosedRef.current) {
+          fistClosedRef.current = false;
+          setFistClosed(false);
+        }
+        if (handDetectedRef.current) {
+          handDetectedRef.current = false;
+          setHandDetected(false);
+        }
       }
     }
 
     if (smoothedTipsRef.current.length && video.videoWidth && video.videoHeight) {
       tips = smoothedTipsRef.current.map((tip) => mapLandmark(tip, video, width, height));
     }
-    const detected = tips.length === TIP_INDEXES.length;
-    if (detected !== handDetectedRef.current) {
-      handDetectedRef.current = detected;
-      setHandDetected(detected);
-    }
+    const detected = tips.length === TIP_INDEXES.length && !fistClosedRef.current;
 
     let cursor: Point | null = null;
-    let activeIndex: number | null = null;
+    let activeIndex: number | null = fistClosedRef.current ? activeIndexRef.current : null;
     if (detected) {
       cursor = {
         x: tips.reduce((total, tip) => total + tip.x, 0) / tips.length,
@@ -378,7 +442,6 @@ export default function Home() {
   return (
     <main className="instrument-shell">
       <video ref={videoRef} className="camera-feed" playsInline muted aria-label="Mirrored camera preview" />
-      <div className="camera-shade" />
       <div className="ambient-grid" />
       <canvas ref={canvasRef} className="tracking-canvas" aria-hidden="true" />
 
@@ -392,7 +455,7 @@ export default function Home() {
         </div>
         <div className="system-controls">
           <span className={`status-dot ${launchState === "ready" ? "online" : ""}`} />
-          <span>{launchState === "ready" ? (handDetected ? "Hand linked" : "Show your hand") : "Instrument idle"}</span>
+          <span>{launchState === "ready" ? (fistClosed ? "Cursor hidden · chord held" : handDetected ? "Hand linked" : "Show your hand") : "Instrument idle"}</span>
           {cameras.length > 1 && (
             <label className="camera-select">
               <span>Camera</span>
@@ -416,12 +479,19 @@ export default function Home() {
             <p className="eyebrow">Wheel library</p>
             <h1>Shape your harmony</h1>
           </div>
-          <span className="chord-count">{chords.length}/{MAX_CHORDS}</span>
+          <div className="panel-tools">
+            <div className="transpose-control" aria-label="Global transpose">
+              <button type="button" onClick={() => setTranspose((value) => Math.max(-12, value - 1))} aria-label="Transpose down one semitone">−</button>
+              <span>{transpose > 0 ? `+${transpose}` : transpose} st</span>
+              <button type="button" onClick={() => setTranspose((value) => Math.min(12, value + 1))} aria-label="Transpose up one semitone">+</button>
+            </div>
+            <span className="chord-count">{chords.length}/{MAX_CHORDS}</span>
+          </div>
         </div>
         <div className="chord-chips">
-          {chords.map((chord) => (
+          {wheelChords.map((chord) => (
             <span className="chord-chip" key={chord.id} style={{ "--chord-hue": chord.hue } as React.CSSProperties}>
-              <span>{chord.label}</span>
+              <span>{chord.label}{chord.transposedLabel && <small> ({chord.transposedLabel})</small>}</span>
               <button type="button" onClick={() => removeChord(chord.id)} aria-label={`Remove ${chord.name}`}>×</button>
             </span>
           ))}
@@ -433,7 +503,7 @@ export default function Home() {
             <input
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="Try F#m or Bb dim"
+              placeholder="Try Cmaj7, F#m9, or Bb13"
               aria-label="Search for a chord"
               autoComplete="off"
             />
@@ -459,7 +529,7 @@ export default function Home() {
         <span className="level-bars"><i /><i /><i /></span>
         <div>
           <span>Now playing</span>
-          <strong>{activeChord?.name ?? "—"}</strong>
+          <strong>{activeChord ? `${activeChord.name}${activeChord.transposedName ? ` (${activeChord.transposedName})` : ""}` : "—"}</strong>
         </div>
         <code>{activeChord?.notes.join("  ")}</code>
       </div>
@@ -470,7 +540,7 @@ export default function Home() {
             <div className="launch-orbit"><span /><i /><i /><i /><i /><i /></div>
             <p className="eyebrow">A camera-powered instrument</p>
             <h2>Your hand becomes<br />the harmony.</h2>
-            <p className="launch-copy">Five fingertips converge into one responsive cursor. Move into the wheel and sound follows instantly.</p>
+            <p className="launch-copy">Five fingertips converge into one responsive cursor. Move into the wheel and sound follows instantly. Close your fist to hide the cursor while holding the chord.</p>
             <button type="button" className="launch-button" onClick={() => void startInstrument()} disabled={launchState === "loading"}>
               <span>{launchState === "loading" ? "Preparing instrument" : launchState === "error" ? "Try again" : "Enter Chordspace"}</span>
               <b>↗</b>

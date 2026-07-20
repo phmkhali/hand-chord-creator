@@ -15,12 +15,14 @@ Open the local address shown in the terminal. Camera access works on localhost; 
 
 ## Features
 
-- full-window mirrored camera
+- full-window mirrored camera without a dimming filter
 - five fingertip markers converging on one hand cursor
+- closed-fist hold that hides the cursor while the active chord keeps sounding
 - immediate chord activation with short audio transitions
 - automatic preference for the built-in MacBook or FaceTime camera
 - manual camera selector when multiple cameras are present
-- searchable major, minor, and diminished chord catalog
+- 252 searchable chords spanning triads, suspensions, sixths, sevenths, ninths, elevenths, and thirteenths
+- global semitone transpose controls that retain each entered chord label and show the sounding chord in brackets
 - locally persisted wheel configuration
 - responsive glass interface designed for desktop browsers
 
@@ -29,3 +31,7 @@ Open the local address shown in the terminal. Camera access works on localhost; 
 ```bash
 npm run build
 ```
+
+## Deploy to GitHub Pages
+
+The repository includes `.github/workflows/deploy-pages.yml`. Push the repository to GitHub, choose **GitHub Actions** as the Pages source under **Settings → Pages**, and push the `main` branch. The workflow builds the static export from `web/` and publishes it automatically.
