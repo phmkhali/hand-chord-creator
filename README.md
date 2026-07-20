@@ -1,4 +1,14 @@
-# Hand Chord Wheel
+# Chordspace
+
+The polished browser version lives in `web/` and is now the recommended way to run the instrument. It uses the browser camera, MediaPipe Tasks, Canvas, and the Web Audio API, so no Python environment is required.
+
+```bash
+cd web
+npm install
+npm run dev
+```
+
+Open the displayed local address in Chrome or Safari, select **Enter Chordspace**, and allow camera access. The browser prefers a camera named MacBook or FaceTime over Continuity Camera when both are available. The original Python prototype remains available below.
 
 A desktop prototype that turns the center of your five tracked fingertips—or the mouse—into a cursor for a customizable chord wheel. The mirrored camera fills the window, with the wheel shown as a translucent overlay on the right. Entering a section sustains a synthesized chord, moving between sections crossfades the sound, and leaving the wheel fades it out.
 
