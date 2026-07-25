@@ -23,7 +23,10 @@ Open the local address shown in the terminal. Camera access works on localhost; 
 - manual camera selector when multiple cameras are present
 - 252 searchable chords spanning triads, suspensions, sixths, sevenths, ninths, elevenths, and thirteenths
 - global semitone transpose controls that retain each entered chord label and show the sounding chord in brackets
+- collapsible chord search with individual and remove-all controls
+- session-only chord set names
 - locally persisted wheel configuration
+- resource-aware tracking that limits camera and inference rates, reduces work on slower devices, and pauses in hidden tabs
 - responsive glass interface designed for desktop browsers
 
 ## Build
