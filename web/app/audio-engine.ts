@@ -1,4 +1,5 @@
 import type { Chord } from "./chords";
+import { guitarVoicing, type StringHit } from "./guitar";
 
 type Voice = {
   gain: GainNode;
@@ -32,6 +33,8 @@ export class ChordAudioEngine {
   private output: GainNode | null = null;
   private voices: Voice[] = [];
   private chordId: string | null = null;
+  private guitarSources = new Set<AudioBufferSourceNode>();
+  private guitarBuffers = new Map<number, AudioBuffer>();
 
   async start() {
     if (!this.context) {
@@ -75,7 +78,54 @@ export class ChordAudioEngine {
     });
   }
 
+  strum(chord: Chord, hits: StringHit[]) {
+    if (!this.context || !this.output || !hits.length) return;
+    const context = this.context;
+    const frequencies = guitarVoicing(chord);
+    hits.forEach((hit, order) => {
+      const frequency = frequencies[hit.index];
+      let buffer = this.guitarBuffers.get(frequency);
+      if (!buffer) {
+        const duration = 3;
+        buffer = context.createBuffer(1, context.sampleRate * duration, context.sampleRate);
+        const samples = buffer.getChannelData(0);
+        const period = Math.round(context.sampleRate / frequency);
+        const delay = new Float32Array(period);
+        for (let index = 0; index < period; index++) delay[index] = Math.random() * 2 - 1;
+        // a damped delay loop models a softly plucked acoustic string.
+        for (let index = 0; index < samples.length; index++) {
+          const slot = index % period;
+          const value = delay[slot];
+          delay[slot] = (value + delay[(slot + 1) % period]) * 0.497;
+          samples[index] = value * Math.min(1, index / (context.sampleRate * 0.003));
+        }
+        this.guitarBuffers.set(frequency, buffer);
+      }
+      const source = context.createBufferSource();
+      source.buffer = buffer;
+      const filter = context.createBiquadFilter();
+      filter.type = "lowpass";
+      filter.frequency.value = 2400 + hit.velocity * 1400;
+      filter.Q.value = 0.5;
+      const gain = context.createGain();
+      const start = context.currentTime + order * 0.008;
+      gain.gain.setValueAtTime(0.32 * (0.45 + hit.velocity * 0.55), start);
+      gain.gain.setTargetAtTime(0.0001, start + 0.15, 0.55);
+      source.connect(filter).connect(gain).connect(this.output!);
+      this.guitarSources.add(source);
+      source.onended = () => {
+        source.disconnect();
+        filter.disconnect();
+        gain.disconnect();
+        this.guitarSources.delete(source);
+      };
+      source.start(start);
+    });
+  }
+
   stop() {
+    for (const source of this.guitarSources) source.stop();
+    this.guitarSources.clear();
     if (!this.chordId) return;
     this.chordId = null;
     this.releaseVoices(0.11);
@@ -86,6 +136,7 @@ export class ChordAudioEngine {
     if (this.context) await this.context.close();
     this.context = null;
     this.output = null;
+    this.guitarBuffers.clear();
   }
 
   private releaseVoices(duration: number) {
