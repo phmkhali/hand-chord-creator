@@ -12,6 +12,7 @@ import {
   transposeChord,
 } from "./chords";
 import { isClosedFist } from "./gesture";
+import { guitarGeometry, GuitarStrumTracker, STRING_COUNT } from "./guitar";
 
 const STORAGE_KEY = "chordspace-wheel-v2";
 const LEGACY_STORAGE_KEY = "chordspace-wheel-v1";
@@ -26,13 +27,18 @@ const MAX_CONSECUTIVE_TRACKING_FAILURES = 3;
 const TIP_INDEXES = [4, 8, 12, 16, 20];
 
 type Point = { x: number; y: number };
+type InstrumentMode = "default" | "guitar";
 
 type WheelChord = Chord & {
   transposedLabel: string | null;
   transposedName: string | null;
 };
 
-const wheelGeometry = (width: number, height: number) => {
+const wheelGeometry = (width: number, height: number, mode: InstrumentMode = "default") => {
+  if (mode === "guitar") {
+    const radius = Math.min(width * 0.22, height * 0.32);
+    return { center: { x: width * 0.27, y: height * 0.53 }, radius };
+  }
   const radius = Math.max(150, Math.min(width * 0.225, height * 0.36));
   return {
     center: { x: width - radius - Math.max(38, width * 0.035), y: height / 2 },
@@ -55,9 +61,9 @@ const mapLandmark = (
   };
 };
 
-const sectionAtPoint = (point: Point, chords: Chord[], width: number, height: number) => {
+const sectionAtPoint = (point: Point, chords: Chord[], width: number, height: number, mode: InstrumentMode) => {
   if (!chords.length) return null;
-  const { center, radius } = wheelGeometry(width, height);
+  const { center, radius } = wheelGeometry(width, height, mode);
   const dx = point.x - center.x;
   const dy = point.y - center.y;
   if (dx * dx + dy * dy > radius * radius) return null;
@@ -81,8 +87,9 @@ const drawWheel = (
   activeIndex: number | null,
   width: number,
   height: number,
+  mode: InstrumentMode,
 ) => {
-  const { center, radius } = wheelGeometry(width, height);
+  const { center, radius } = wheelGeometry(width, height, mode);
   context.save();
   context.shadowColor = "rgba(0, 0, 0, 0.42)";
   context.shadowBlur = 50;
@@ -190,6 +197,34 @@ const drawHand = (context: CanvasRenderingContext2D, tips: Point[], cursor: Poin
   context.restore();
 };
 
+const drawStrings = (context: CanvasRenderingContext2D, width: number, height: number, flashes: number[], timestamp: number) => {
+  const { left, right, strings } = guitarGeometry(width, height);
+  context.save();
+  context.fillStyle = "rgba(255,227,185,.85)";
+  context.textAlign = "left";
+  context.font = "600 12px system-ui";
+  context.fillText("SOFT ACOUSTIC · RIGHT HAND", left, strings[0] - 36);
+  strings.forEach((y, index) => {
+    const intensity = Math.max(0, 1 - (timestamp - flashes[index]) / 240);
+    context.beginPath();
+    context.moveTo(left, y);
+    context.lineTo(right, y);
+    context.strokeStyle = `rgba(255,220,166,${0.38 + intensity * 0.62})`;
+    context.lineWidth = 2.8 - index * 0.32 + intensity;
+    context.shadowColor = "#ffc97f";
+    context.shadowBlur = intensity * 18;
+    context.stroke();
+    context.shadowBlur = 0;
+    context.fillStyle = "rgba(255,235,202,.65)";
+    context.font = "500 11px monospace";
+    context.fillText(`${6 - index}`, left - 22, y + 4);
+    context.beginPath();
+    context.arc(right, y, 3, 0, Math.PI * 2);
+    context.fill();
+  });
+  context.restore();
+};
+
 export default function Home() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const wheelCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -212,6 +247,15 @@ export default function Home() {
   const handDetectedRef = useRef(false);
   const fistClosedRef = useRef(false);
   const audioRef = useRef(new ChordAudioEngine());
+  const modeRef = useRef<InstrumentMode>("default");
+  const strumTrackerRef = useRef(new GuitarStrumTracker());
+  const rightPointRef = useRef<Point | null>(null);
+  const stringFlashesRef = useRef<number[]>(Array(STRING_COUNT).fill(-Infinity));
+  const [mode, setMode] = useState<InstrumentMode>("default");
+  const [isEditorOpen, setIsEditorOpen] = useState(true);
+  const [rightHandDetected, setRightHandDetected] = useState(false);
+  const rightHandDetectedRef = useRef(false);
+  const editorToggleRef = useRef<HTMLButtonElement>(null);
 
   const [chords, setChords] = useState(defaultChords);
   const [transpose, setTranspose] = useState(0);
@@ -260,7 +304,8 @@ export default function Home() {
     if (!context) return;
     context.setTransform(density, 0, 0, density, 0, 0);
     context.clearRect(0, 0, width, height);
-    drawWheel(context, chordsRef.current, activeIndex, width, height);
+    drawWheel(context, chordsRef.current, activeIndex, width, height, modeRef.current);
+    if (modeRef.current === "guitar") drawStrings(context, width, height, stringFlashesRef.current, performance.now());
   }, []);
 
   useEffect(() => {
@@ -304,7 +349,11 @@ export default function Home() {
   }, [chordSetName, storageReady]);
 
   useEffect(() => {
-    const handleResize = () => renderWheel();
+    const handleResize = () => {
+      strumTrackerRef.current.reset();
+      rightPointRef.current = null;
+      renderWheel();
+    };
     window.addEventListener("resize", handleResize);
     renderWheel();
     return () => window.removeEventListener("resize", handleResize);
@@ -344,9 +393,17 @@ export default function Home() {
       lastVideoTimeRef.current = video.currentTime;
       const processingStartedAt = performance.now();
       let landmarks: NormalizedLandmark[] | undefined;
+      let rightLandmarks: NormalizedLandmark[] | undefined;
       try {
         const result = landmarker.detectForVideo(video, timestamp);
-        landmarks = result.landmarks[0] as NormalizedLandmark[] | undefined;
+        if (modeRef.current === "guitar") {
+          const leftIndex = result.handedness.findIndex((hand) => hand[0]?.categoryName === "Left");
+          const rightIndex = result.handedness.findIndex((hand) => hand[0]?.categoryName === "Right");
+          landmarks = leftIndex < 0 ? undefined : result.landmarks[leftIndex];
+          rightLandmarks = rightIndex < 0 ? undefined : result.landmarks[rightIndex];
+        } else {
+          landmarks = result.landmarks[0];
+        }
         trackingFailureCountRef.current = 0;
       } catch (error) {
         trackingFailureCountRef.current += 1;
@@ -362,6 +419,11 @@ export default function Home() {
           setLaunchState("error");
         }
         return;
+      }
+      rightPointRef.current = rightLandmarks ? mapLandmark(rightLandmarks[8], video, width, height) : null;
+      if (Boolean(rightLandmarks) !== rightHandDetectedRef.current) {
+        rightHandDetectedRef.current = Boolean(rightLandmarks);
+        setRightHandDetected(Boolean(rightLandmarks));
       }
       const processingDuration = performance.now() - processingStartedAt;
       averageProcessingTimeRef.current = averageProcessingTimeRef.current
@@ -417,22 +479,73 @@ export default function Home() {
         x: tips.reduce((total, tip) => total + tip.x, 0) / tips.length,
         y: tips.reduce((total, tip) => total + tip.y, 0) / tips.length,
       };
-      activeIndex = sectionAtPoint(cursor, chordsRef.current, width, height);
+      activeIndex = sectionAtPoint(cursor, chordsRef.current, width, height, modeRef.current);
     }
 
     if (activeIndex !== activeIndexRef.current) {
       activeIndexRef.current = activeIndex;
       const chord = activeIndex === null ? null : chordsRef.current[activeIndex];
       setActiveChord(chord);
-      if (chord) audioRef.current.play(chord);
-      else audioRef.current.stop();
+      if (modeRef.current === "default") {
+        if (chord) audioRef.current.play(chord);
+        else audioRef.current.stop();
+      }
       renderWheel(activeIndex);
     }
 
+    if (modeRef.current === "guitar") {
+      const hits = strumTrackerRef.current.update(rightPointRef.current, timestamp, width, height);
+      const chord = activeIndex === null ? null : chordsRef.current[activeIndex];
+      if (chord && hits.length) {
+        audioRef.current.strum(chord, hits);
+        hits.forEach(({ index }) => { stringFlashesRef.current[index] = timestamp; });
+      }
+      renderWheel(activeIndex);
+      const pick = rightPointRef.current;
+      if (pick) {
+        context.beginPath();
+        context.arc(pick.x, pick.y, 10, 0, Math.PI * 2);
+        context.fillStyle = "#ffe3b4";
+        context.shadowColor = "#f2be76";
+        context.shadowBlur = 18;
+        context.fill();
+        context.shadowBlur = 0;
+        context.fillStyle = "#ffe3b4";
+        context.font = "500 11px system-ui";
+        context.fillText("R · pick", pick.x + 18, pick.y + 4);
+      }
+    }
     if (cursor) drawHand(context, tips, cursor);
   }, [renderWheel]);
 
+  const resetTracking = useCallback(() => {
+    smoothedTipsRef.current = [];
+    rightPointRef.current = null;
+    strumTrackerRef.current.reset();
+    stringFlashesRef.current.fill(-Infinity);
+    activeIndexRef.current = null;
+    fistClosedRef.current = false;
+    handDetectedRef.current = false;
+    rightHandDetectedRef.current = false;
+    lastVideoTimeRef.current = -1;
+    setActiveChord(null);
+    setFistClosed(false);
+    setHandDetected(false);
+    setRightHandDetected(false);
+    audioRef.current.stop();
+  }, []);
+
+  const changeMode = (nextMode: InstrumentMode) => {
+    if (nextMode === modeRef.current) return;
+    modeRef.current = nextMode;
+    setMode(nextMode);
+    resetTracking();
+    if (nextMode === "guitar") setIsEditorOpen(false);
+    renderWheel(null);
+  };
+
   const selectCamera = useCallback(async (deviceId?: string) => {
+    resetTracking();
     streamRef.current?.getTracks().forEach((track) => track.stop());
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: false,
@@ -451,7 +564,7 @@ export default function Home() {
     const selectedId = stream.getVideoTracks()[0].getSettings().deviceId || "";
     setCameraId(selectedId);
     return stream;
-  }, []);
+  }, [resetTracking]);
 
   const startInstrument = async () => {
     setLaunchState("loading");
@@ -474,7 +587,7 @@ export default function Home() {
           delegate: "GPU",
         },
         runningMode: "VIDEO",
-        numHands: 1,
+        numHands: 2,
         minHandDetectionConfidence: 0.5,
         minHandPresenceConfidence: 0.5,
         minTrackingConfidence: 0.5,
@@ -511,6 +624,7 @@ export default function Home() {
         track.enabled = isVisible;
       });
       if (!isVisible) {
+        resetTracking();
         if (animationRef.current !== null) window.cancelAnimationFrame(animationRef.current);
         animationRef.current = null;
         videoRef.current?.pause();
@@ -537,7 +651,7 @@ export default function Home() {
     };
     document.addEventListener("visibilitychange", handleVisibilityChange);
     return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
-  }, [launchState, renderFrame, renderWheel]);
+  }, [launchState, renderFrame, renderWheel, resetTracking]);
 
   useEffect(() => () => {
     if (animationRef.current !== null) window.cancelAnimationFrame(animationRef.current);
@@ -587,7 +701,7 @@ export default function Home() {
   };
 
   return (
-    <main className="instrument-shell">
+    <main className={`instrument-shell ${mode === "guitar" ? "guitar-mode" : ""}`}>
       <video ref={videoRef} className="camera-feed" playsInline muted aria-label="Mirrored camera preview" />
       <div className="ambient-grid" />
       <canvas ref={wheelCanvasRef} className="wheel-canvas" aria-hidden="true" />
@@ -601,9 +715,13 @@ export default function Home() {
             <span>gesture instrument</span>
           </div>
         </div>
+        <div className="mode-controls" role="group" aria-label="Instrument mode">
+          <button type="button" aria-pressed={mode === "default"} onClick={() => changeMode("default")}>Chord mode</button>
+          <button type="button" aria-pressed={mode === "guitar"} onClick={() => changeMode("guitar")}>Guitar mode</button>
+        </div>
         <div className="system-controls">
           <span className={`status-dot ${launchState === "ready" ? "online" : ""}`} />
-          <span>{launchState === "ready" ? (fistClosed ? "Cursor hidden · chord held" : handDetected ? "Hand linked" : "Show your hand") : "Instrument idle"}</span>
+          <span>{launchState === "ready" ? mode === "guitar" ? `L: ${handDetected ? fistClosed ? "held" : "linked" : "show hand"} · R: ${rightHandDetected ? "linked" : "show hand"}` : (fistClosed ? "Cursor hidden · chord held" : handDetected ? "Hand linked" : "Show your hand") : "Instrument idle"}</span>
           {cameras.length > 1 && (
             <label className="camera-select">
               <span>Camera</span>
@@ -621,7 +739,11 @@ export default function Home() {
         </div>
       </header>
 
-      <section className="editor-panel" aria-label="Chord wheel editor">
+      <button ref={editorToggleRef} type="button" className="editor-toggle" aria-controls="chord-editor" aria-expanded={isEditorOpen} onClick={() => setIsEditorOpen((open) => !open)}>
+        {isEditorOpen ? "Close chord menu ×" : "Open chord menu +"}
+      </button>
+      <section id="chord-editor" className="editor-panel" hidden={!isEditorOpen} aria-label="Chord wheel editor">
+        <button type="button" className="editor-close" aria-label="Close chord menu" onClick={() => { setIsEditorOpen(false); editorToggleRef.current?.focus(); }}>×</button>
         <div className="panel-heading">
           <div>
             <p className="eyebrow">Wheel library</p>
@@ -710,19 +832,29 @@ export default function Home() {
       <div className={`now-playing ${activeChord ? "visible" : ""}`} aria-live="polite">
         <span className="level-bars"><i /><i /><i /></span>
         <div>
-          <span>Now playing</span>
+          <span>{mode === "guitar" ? "Selected chord · strum to play" : "Now playing"}</span>
           <strong>{activeChord ? `${activeChord.name}${activeChord.transposedName ? ` (${activeChord.transposedName})` : ""}` : "—"}</strong>
         </div>
         <code>{activeChord?.notes.join("  ")}</code>
       </div>
 
+      {mode === "guitar" && (
+        <div className="guitar-instructions">
+          <span><b>Left hand</b> Choose a chord · close your fist to hold</span>
+          <span><b>Right index finger</b> Sweep up or down · cross fewer strings for a partial strum</span>
+        </div>
+      )}
       {launchState !== "ready" && (
         <section className="launch-overlay" aria-label="Start instrument">
           <div className="launch-card">
             <div className="launch-orbit"><span /><i /><i /><i /><i /><i /></div>
             <p className="eyebrow">A camera-powered instrument</p>
             <h2>Your hand becomes<br />the harmony.</h2>
-            <p className="launch-copy">Five fingertips converge into one responsive cursor. Move into the wheel and sound follows instantly. Close your fist to hide the cursor while holding the chord.</p>
+            <div className="mode-controls launch-modes" role="group" aria-label="Choose instrument mode">
+              <button type="button" aria-pressed={mode === "default"} onClick={() => changeMode("default")}>Chord mode</button>
+              <button type="button" aria-pressed={mode === "guitar"} onClick={() => changeMode("guitar")}>Guitar mode</button>
+            </div>
+            {mode === "guitar" ? <p className="launch-copy">Choose a chord on the left wheel with your left hand. Sweep your right index finger across the strings to strum a soft acoustic guitar. Close your left fist to hold a chord.</p> : <p className="launch-copy">Five fingertips converge into one responsive cursor. Move into the wheel and sound follows instantly. Close your fist to hide the cursor while holding the chord.</p>}
             <button type="button" className="launch-button" onClick={() => void startInstrument()} disabled={launchState === "loading"}>
               <span>{launchState === "loading" ? "Preparing instrument" : launchState === "error" ? "Try again" : "Enter Chordspace"}</span>
               <b>↗</b>

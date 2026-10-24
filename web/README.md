@@ -29,6 +29,22 @@ Open the local address shown in the terminal. Camera access works on localhost; 
 - resource-aware tracking that limits camera and inference rates, reduces work on slower devices, and pauses in hidden tabs
 - responsive glass interface designed for desktop browsers
 
+## Guitar mode
+
+Select **Guitar mode** before or after entering the instrument. Your left hand controls
+its chord wheel on the left; close your left fist to hold a selection. Your right
+index fingertip acts as a pick on the six strings stacked on the right. Move down
+for a top-to-bottom stroke, or up for bottom-to-top. Only strings crossed inside
+the playing area sound, so short strokes play partial chords. String flashes show
+each pluck. The guitar uses a soft, damped acoustic string synthesis.
+
+Use **Close chord menu** and **Open chord menu** in either mode to hide and reopen
+the existing editor. Guitar mode initially hides it to leave the wheel clear.
+Chord selection is silent in guitar mode until you strum. Switching modes stops
+any sound and clears tracking positions. Keep both hands visible to the camera.
+
+Run the strumming regression tests with `npm run test:guitar`.
+
 ## Build
 
 ```bash
